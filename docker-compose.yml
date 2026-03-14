@@ -1,0 +1,78 @@
+# docker-compose.yml
+# ─────────────────────────────────────────────────────────────────────────────
+# WorkspaceVision — Full stack with GPU support
+#
+# Quick start:
+#   docker compose up --build          # build & run everything
+#   docker compose up                  # run (after first build)
+#   docker compose down                # stop everything
+#   docker compose logs -f backend     # tail backend logs
+#
+# Prerequisites:
+#   - Docker Desktop with WSL2 backend (Windows)
+#   - NVIDIA Container Toolkit installed
+#   - NVIDIA GPU drivers installed on host
+#
+# First run:
+#   HuggingFace models (~8GB) are downloaded on first launch.
+#   The backend health check has a 120s start-period to allow for this.
+#   Subsequent runs use the cached models from the hf_cache volume.
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── Backend — FastAPI + ML Models (GPU) ──────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: workspacevision-backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - DEVICE=auto
+      - CHROMA_DB_PATH=/app/knowledge/chroma_store
+      - MLFLOW_TRACKING_URI=/app/mlops/tracking
+    volumes:
+      # Persistent HuggingFace model cache — survives container rebuilds
+      - hf_cache:/app/.cache/huggingface
+      # Persistent ChromaDB knowledge base
+      - ./backend/knowledge/chroma_store:/app/knowledge/chroma_store
+      # Persistent MLflow tracking data
+      - ./mlops/tracking:/app/mlops/tracking
+      # PDF manuals (read-only, shared with host)
+      - ./backend/knowledge/manuals:/app/knowledge/manuals:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  # ── Frontend — Streamlit UI ─────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: workspacevision-frontend
+    ports:
+      - "8501:8501"
+    env_file:
+      - .env
+    environment:
+      # Inside Docker network, frontend reaches backend by service name
+      - BACKEND_URL=http://backend:8000
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+# ── Named volumes ────────────────────────────────────────────────────────────
+volumes:
+  # HuggingFace model cache (~8GB) — persists across rebuilds
+  # To clear: docker volume rm workspacevision_hf_cache
+  hf_cache:
